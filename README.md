@@ -49,7 +49,7 @@ This repository is MIT licensed (see [LICENSE](LICENSE)).
 If you use any of the code in this repository or find it useful, please consider citing our work:
 
     @InProceedings{virtualbiopsy2023,
-      author={Yao, MS and Tisdal, MD},
+      author={Yao, MS and Tisdall, MD},
       title={Evaluating Echo Planar Spectroscopic Imaging with a Columnar Excitation for \enquote{Virtual Biopsies}},
       booktitle={Proc Intl Soc Mag Reson Med},
       year={2023},
