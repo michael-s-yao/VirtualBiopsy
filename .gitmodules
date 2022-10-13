@@ -1,3 +1,6 @@
 [submodule "twixtools"]
 	path = twixtools
 	url = https://github.com/pehses/twixtools.git
+[submodule "mr-sequence-diagrams"]
+	path = mr-sequence-diagrams
+	url = https://github.com/dangom/mr-sequence-diagrams.git
