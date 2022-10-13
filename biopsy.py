@@ -9,19 +9,30 @@ Licensed under the MIT License.
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
+from scipy.signal import convolve2d
+from scipy.signal.windows import hann
+import sys
 from typing import Optional, Tuple, Union
 from twixtools import twixtools
 
 
 class VirtualBiopsy:
-    def __init__(self, dat_fn: Union[Path, str], num_readouts: int = 32):
+    def __init__(
+            self,
+            dat_fn: Union[Path, str],
+            num_readouts: int = 32,
+            do_zero_pad: bool = True
+        ):
         """
         Args:
             dat_fn: path to .dat file of raw Siemens virtual biopsy data.
             num_readouts: number of readouts in raw data.
+            do_zero_pad: whether or not to do zero padding to make the
+                final image reconstruction square.
         """
         self.dat_fn = dat_fn
         self.num_readouts = num_readouts
+        self.do_zero_pad = do_zero_pad
         self.kspace = self.read_image_data()
         self.cimg = self.reconstruct()
 
@@ -64,15 +75,25 @@ class VirtualBiopsy:
         # Reverse the odd count acquisitions.
         for r in range(kspace.shape[0]):
             if r % 2:
-                kspace[r, :, :] = kspace[r, :, ::-1]
-        # Move the coil dimension to the beginning.
-        kspace = kspace.transpose((1, 0, -1))
+                for chan in range(c):
+                    kspace[r, chan, :] = kspace[r, chan, ::-1]
+
+        reordered = np.zeros((c, self.num_readouts, d), dtype=kspace.dtype)
+        for chan in range(c):
+            for r in range(self.num_readouts):
+                reordered[chan, r, :] = kspace[r, chan, :]
+        kspace = reordered
 
         # Zero-pad the Fourier data.
-        c, h, w = kspace.shape
-        padding = np.zeros((c, (w - h) // 2, w), dtype=kspace.dtype)
-        kspace = np.concatenate((padding, kspace, padding,), axis=1)
+        if self.do_zero_pad:
+            kspace = VirtualBiopsy.zero_pad(kspace)
 
+        # Apply apodization filter.
+        apo_window = hann(M=10)[..., np.newaxis]
+        for chan in range(kspace.shape[0]):
+            kspace[chan, ...]= convolve2d(
+                kspace[chan, ...], apo_window, mode="same"
+            )
         # Inverse Fourier transform.
         recon = np.fft.fftshift(
             np.fft.ifft2(np.fft.ifftshift(kspace, axes=(-2, -1))),
@@ -83,6 +104,20 @@ class VirtualBiopsy:
         recon = np.sum(recon, axis=0)
 
         return np.flip(recon)
+
+    @staticmethod
+    def zero_pad(kspace: np.ndarray) -> np.ndarray:
+        """
+        Zero-pads an input kspace data to make the dataset square.
+        Input:
+            kspace: kspace dataset with dimensions CHW. Padding is applied
+                along the H dimension.
+        Returns:
+            Zero-padded kspace.
+        """
+        c, h, w = kspace.shape
+        padding = np.zeros((c, (w - h) // 2, w), dtype=kspace.dtype)
+        return np.concatenate((padding, kspace, padding,), axis=1)
 
     def center_crop(
         self, crop_size: Optional[Tuple[int]] = None, inplace: bool = False
@@ -129,20 +164,56 @@ class VirtualBiopsy:
         """
         def _ahn_and_cho(cimg: np.ndarray) -> np.ndarray:
             H, W = cimg.shape
-            rho_x = np.zeros(W, dtype=cimg.dtype)
-            for r in range(H - 1):
-                rho_x = np.add(
-                    rho_x,
-                    np.divide(cimg[r, :] * np.conj(cimg[r + 1, :]), H - 1)
-                )
+            opt1 = True
+            if opt1:
+                rho_x = np.zeros(H, dtype=cimg.dtype)
+                for r in range(H - 1):
+                    rho_x[r] = np.divide(
+                        np.mean(cimg[r, :] * np.conj(cimg[r + 1, :])), H - 1
+                    )
+            else:
+                rho_x = np.zeros(W, dtype=cimg.dtype)
+                for c in range(W - 1):
+                    rho_x[c] = np.divide(
+                        np.mean(cimg[:, c] * np.conj(cimg[:, c + 1])), W - 1
+                    )
             eps_1 = -np.angle(rho_x)
             eps_1 = np.mean(eps_1)
-            cimg_1 = cimg * np.exp(-1j * eps_1 * np.arange(0, H))
+            if opt1:
+                cimg_1 = cimg * np.exp(-1j * eps_1 * np.arange(0, H))
+            else:
+                cimg_1 = cimg * np.exp(-1j * eps_1 * np.arange(0, W))
             hist, bin_edges = np.histogram(np.angle(cimg_1), bins=num_bins)
             eps_0 = bin_edges[np.argmax(hist)]
             return cimg_1 * np.exp(-1j * eps_0)
+
+        def _tisdall(cimg: np.ndarray) -> np.ndarray:
+            R = np.copy(cimg)
+            # Rpos and Rneg are neighbors along the ky direction.
+            Rneg = np.copy(R)[::2, :]
+            Rpos = np.copy(R)[1::2, :]
+            P = np.zeros_like(Rpos)
+            for i in range(P.shape[0]):
+                P[i, :] = np.divide(
+                    np.conj(Rneg[i, :]) * Rpos[i, :],
+                    np.abs(Rneg[i, :] * Rpos[i, :])
+                )
+            # Use the phase correction term to correct each line.
+            for i in range(R.shape[0]):
+                if i % 2:
+                    phase_corr = np.sqrt(P[(i - 1) // 2, :])
+                else:
+                    phase_corr = np.conj(np.sqrt(P[i // 2, :]))
+                R[i, :] = R[i, :] * np.exp(1j * phase_corr)
+            return R
+
+        def _none(cimg: np.ndarray) -> np.ndarray:
+            return cimg
+
         method_map = {
             "ahn and cho": _ahn_and_cho,
+            "tisdall": _tisdall,
+            "none": _none,
         }
         if inplace:
             self.cimg = method_map[method.lower()](self.cimg)
@@ -158,8 +229,12 @@ class VirtualBiopsy:
         Returns:
             None.
         """
+        kspace = False
         plt.figure(figsize=(10, 10))
-        plt.imshow(np.abs(self.cimg), cmap="gray")
+        if kspace:
+            plt.imshow(np.abs(np.fft.fftshift(np.fft.fft2(self.cimg))[:, 128:384]), cmap="gray")
+        else:
+            plt.imshow(np.abs(self.cimg), cmap="gray")
         plt.axis("off")
         if savepath is None:
             plt.show()
@@ -167,3 +242,22 @@ class VirtualBiopsy:
             plt.savefig(
                 savepath, dpi=600, bbox_inches="tight", transparent=True
             )
+
+
+def debug(img: np.ndarray, stop: bool = True) -> None:
+    """
+    Utility function that plots a given 2D matrix.
+    Input:
+        img: 2D image to plot.
+        stop: whether to stop execution at the end of the function.
+    Returns:
+        None.
+    """
+    plt.plot()
+    plt.imshow(img, cmap="gray")
+    plt.axis("off")
+    plt.show()
+    plt.close()
+    if stop:
+        sys.exit(0)
+    return None
