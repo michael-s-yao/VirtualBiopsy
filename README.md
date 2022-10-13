@@ -25,7 +25,7 @@ source env/bin/activate
 pip install -r requirements.txt
 ```
 
-To ensure reproducibility, we provide our raw MR signal datasets and relevant import scripts in the `data` directory. Image reconstruction and analysis scripts are offered in `biopsy.py`. To replicate the results associated with our 2023 ISMRM Abstract submission, you can run 
+To ensure reproducibility, we provide our raw MR signal datasets used to generate our reported results [here](https://upenn.box.com/s/dt5ma6t3yrwldmoflc1wos8sdk8s22nx). Image reconstruction and analysis scripts are offered in `biopsy.py`. To replicate the results associated with our 2023 ISMRM Abstract submission, you can run 
 
 ```
 python main.py

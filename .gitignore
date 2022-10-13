@@ -8,6 +8,7 @@ __pycache__/
 
 # Datasets
 data/
+mrdata/
 
 # Distribution / packaging
 .Python
