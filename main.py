@@ -19,23 +19,16 @@ def build_args() -> argparse.Namespace:
         help="Path to raw Siemens data file. Should be .dat file type."
     )
     parser.add_argument(
-        "--num_readouts",
-        type=int,
-        default=32,
-        help="Number of readouts in raw data. Default 32."
-    )
-    parser.add_argument(
         "--savepath",
         type=str,
         default=None,
         help="Optional savepath to save image to. Default not saved."
     )
     parser.add_argument(
-        "--even_odd_correction",
-        type=str,
-        default="Tisdall",
-        choices=("Ahn and Cho", "Tisdall", "None"),
-        help="Even-odd line correction algorithm to use. Default Tisdall 2020."
+        "--seed",
+        type=int,
+        default=42,
+        help="Optional random seed. Default 42."
     )
     return parser.parse_args()
 
@@ -43,9 +36,6 @@ def build_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = build_args()
 
-    biopsy = VirtualBiopsy(args.data_path, args.num_readouts, do_zero_pad=True)
+    biopsy = VirtualBiopsy(args.data_path, seed=args.seed)
     biopsy.center_crop(inplace=True)
-    biopsy.phase_correction(
-        method=args.even_odd_correction, num_bins=100, inplace=True
-    )
-    biopsy.plot(savepath=args.savepath)
+    # biopsy.plot(savepath=args.savepath)

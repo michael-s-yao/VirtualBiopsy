@@ -11,99 +11,206 @@ import numpy as np
 from pathlib import Path
 from scipy.signal import convolve2d
 from scipy.signal.windows import hann
-import sys
-from typing import Optional, Tuple, Union
-from twixtools import twixtools
+from typing import Optional, List, Sequence, Tuple, Union
+from twixtools import map_twix
+from twixtools import twix_array
 
 
 class VirtualBiopsy:
     def __init__(
-            self,
-            dat_fn: Union[Path, str],
-            num_readouts: int = 32,
-            do_zero_pad: bool = True
-        ):
+        self,
+        dat_fn: Union[Path, str],
+        seed: int = 42
+    ):
         """
         Args:
             dat_fn: path to .dat file of raw Siemens virtual biopsy data.
-            num_readouts: number of readouts in raw data.
-            do_zero_pad: whether or not to do zero padding to make the
-                final image reconstruction square.
+            seed: optional random seed.
         """
         self.dat_fn = dat_fn
-        self.num_readouts = num_readouts
-        self.do_zero_pad = do_zero_pad
-        self.kspace = self.read_image_data()
-        self.cimg = self.reconstruct()
+        self.seed = seed
+        self.rng = np.random.RandomState(self.seed)
+        self.cimg = self.reconstruct(M=20)
 
-    def read_image_data(self) -> np.ndarray:
+    def ifftnd(
+        self, kspace: np.ndarray, axes: Sequence[int] = [-1]
+    ) -> np.ndarray:
         """
-        Reads raw scanner data from specified .dat file.
+        Performs an n-dimensional inverse fast Fourier transform.
         Input:
+            kspace: kspace tensor.
+            axes: axes over which to perform the iFFT operaton.
+        Returns:
+            The inverse fast Fourier transform of kspace.
+        This function implementation was adapted from https://github.com/
+        pehses/twixtools/blob/master/demo/recon_example.ipynb
+        """
+        if axes is None:
+            axes = list(range(kspace.ndim))
+        img = np.fft.fftshift(
+            np.fft.ifftn(np.fft.ifftshift(kspace, axes=axes), axes=axes),
+            axes=axes
+        )
+        return img * np.sqrt(np.prod(np.take(img.shape, axes)))
+
+    def fftnd(
+        self, img: np.ndarray, axes: Sequence[int] = [-1]
+    ) -> np.ndarray:
+        """
+        Performs an n-dimensional fast Fourier transform.
+        Input:
+            img: image tensor.
+            axes: axes over which to perform iFFT operaton.
+        Returns:
+            The fast Fourier transform of img.
+        This function implementation was adapted from https://github.com/
+        pehses/twixtools/blob/master/demo/recon_example.ipynb
+        """
+        if axes is None:
+            axes = list(range(img.ndim))
+        kspace = np.fft.fftshift(
+            np.fft.fftn(np.fft.ifftshift(img, axes=axes), axes=axes),
+            axes=axes
+        )
+        return np.divide(
+            kspace, np.sqrt(np.prod(np.take(kspace.shape, axes)))
+        )
+
+    def phase_corr(
+        self, epsi_map: List[dict], kspace: twix_array
+    ) -> np.ndarray:
+        """
+        Calculate and apply EPI phase correction using a simple
+        autocorrelation-based approach.
+        Input:
+            epsi_map: an object returned from calling `twixtools.map_twix`
+                that represents the EPSI virtual biopsy dataset.
+            kspace: the extracted image kspace dataset.
+        Returns:
+            The phase constructed and iFFT'ed kspace data.
+        This function implementation was adapted from https://github.com/
+        pehses/twixtools/blob/master/demo/recon_example.ipynb
+        """
+        phase_corr = epsi_map[-1]["phasecorr"]
+        phase_corr.flags["remove_os"] = True
+        phase_corr.flags["skip_empty_lead"] = True
+        phase_corr.flags["average"]["Seg"] = False
+        phase_corr.flags["regrid"] = True
+
+        # Calculate phase correction using a simple autocorrelation-based
+        # approach.
+        ncol = phase_corr.shape[-1]
+        pc = self.ifftnd(phase_corr[:], axes=[-1])
+        slope = np.angle(
+            np.sum(
+                np.sum(
+                    np.conj(pc[..., 1:]) * pc[..., :-1],
+                    axis=-1,
+                    keepdims=True
+                ),
+                axis=-2,
+                keepdims=True
+            )
+        )
+        pc_corr = np.exp(1j * slope * (np.arange(ncol) - (ncol // 2)))
+        # Apply phase correction.
+        img = self.ifftnd(kspace[:], axes=[-1])
+        img = img * pc_corr
+        # Remove segment dimension.
+        img = np.squeeze(np.sum(img, axis=5))
+        img = self.ifftnd(img, axes=[0])
+        return img
+
+    def coil_combine(self, img: np.ndarray, axis: int = 1) -> np.ndarray:
+        """
+        Simple RSS coil combination implementation.
+        Input:
+            img: EPSI virtual biopsy image data.
+            axis: axis to apply coil combination to.
+        Returns:
+            Coil combined image.
+        """
+        return np.sqrt(np.sum(np.conj(img) * img, axis=axis))
+
+    def freq_axis(
+        self,
+        img: np.ndarray,
+        signal_thresh: float = 0.001,
+        num_sample: int = 1000
+    ) -> Tuple[np.ndarray]:
+        """
+        Fits a quadratic model to determine the zero set point of the
+        frequency axis in a 2D virtual biopsy image.
+        Input:
+            img: 2D EPSI virtual biopsy image.
+            signal_thresh: threshold for image intensity values, above
+                which an image pixel is considered part of the EPSI
+                signal.
+            num_sample: number of signal pixels to use in quadratic
+                fitting. Default 1000. If this parameter is negative,
+                then all available signal values are used.
+        Returns:
+            pe_locs: frequency axis locations along the frequency dimension.
+            ro_locs: frequency axis locations along the spatial readout
+                dimension.
+        """
+        # Threshold the signal in image space (empirically determined).
+        w_locs, h_locs = np.where(img > signal_thresh)
+        # Randomly sample a subset of the signal points in image space.
+        if num_sample < 0:
+            num_sample = h_locs.shape[0]
+        num_sample = max(3, min(h_locs.shape[0], num_sample))
+        idxs = self.rng.choice(
+            np.arange(h_locs.shape[0]), size=num_sample, replace=False
+        )
+        h_locs, w_locs = h_locs[idxs], w_locs[idxs]
+
+        # Fit the data to a quadratic model.
+        q_model = np.poly1d(np.polyfit(h_locs, w_locs, 2))
+        ro_locs = np.arange(0, img.shape[-1])
+        pe_locs = q_model(ro_locs)
+        return pe_locs, ro_locs
+
+    def reconstruct(self, M: int = 20) -> np.ndarray:
+        """
+        Reads and reconstructs raw scanner data from specified .dat file.
+        Input:
+            M: Hann window size. Default 20.
             None.
         Returns:
             Raw scanner data from self.dat_fn as a 3D array with dimensions
             [acquisition_counter, num_channels, num_columns].
         """
-        data = []
-        for mdb in twixtools.read_twix(self.dat_fn)[-1]["mdb"]:
-            if mdb.is_image_scan():
-                data.append(mdb.data)
-        return np.asarray(data)
+        epsi_map = map_twix(self.dat_fn)
+        kspace = epsi_map[-1]["image"]
+        kspace.flags["remove_os"] = True
+        # For phase-correction, we need to keep the individual segments, which
+        # indicate the readout's polarity.
+        kspace.flags["average"]["Seg"] = False
+        kspace.flags["regrid"] = True
 
-    def reconstruct(self) -> np.ndarray:
-        """
-        Reconstructs image from kspace data.
-        Input:
-            None.
-        Returns:
-            Complex image reconstruction of self.kspace.
-        """
-        num_averages = self.kspace.shape[0] // self.num_readouts
-        if num_averages * self.num_readouts != self.kspace.shape[0]:
-            msg = f"Number of readouts {self.num_readouts} must be a "
-            msg += f"multiple of {self.kspace.shape[0]}."
-            raise ValueError(msg)
-        _, c, d = self.kspace.shape
-        kspace = self.kspace.reshape(
-            (num_averages, self.num_readouts, c, d), order="C"
-        )
-
-        # Average over the num_averages acquisitions.
-        kspace = np.mean(kspace, axis=0)
-
-        # Reverse the odd count acquisitions.
-        for r in range(kspace.shape[0]):
-            if r % 2:
-                for chan in range(c):
-                    kspace[r, chan, :] = kspace[r, chan, ::-1]
-
-        reordered = np.zeros((c, self.num_readouts, d), dtype=kspace.dtype)
-        for chan in range(c):
-            for r in range(self.num_readouts):
-                reordered[chan, r, :] = kspace[r, chan, :]
-        kspace = reordered
+        img = self.phase_corr(epsi_map, kspace)
+        # Coil combination.
+        img = self.coil_combine(img, axis=1)
 
         # Zero-pad the Fourier data.
-        if self.do_zero_pad:
-            kspace = VirtualBiopsy.zero_pad(kspace)
+        kspace = np.squeeze(VirtualBiopsy.zero_pad(
+            self.fftnd(img, axes=[0, -1])[np.newaxis, ...]
+        ))
 
         # Apply apodization filter.
-        apo_window = hann(M=10)[..., np.newaxis]
-        for chan in range(kspace.shape[0]):
-            kspace[chan, ...]= convolve2d(
-                kspace[chan, ...], apo_window, mode="same"
-            )
-        # Inverse Fourier transform.
-        recon = np.fft.fftshift(
-            np.fft.ifft2(np.fft.ifftshift(kspace, axes=(-2, -1))),
-            axes=(-2, -1)
-        )
+        if M > 0:
+            apo_window = hann(M=M)[..., np.newaxis]
+            kspace = convolve2d(kspace, apo_window, mode="same")
 
-        # Sum over the coils.
-        recon = np.sum(recon, axis=0)
+        img = np.flip(self.ifftnd(kspace, axes=[-2, -1]))
 
-        return np.flip(recon)
+        x, y = self.freq_axis(np.abs(img))
+        # Plot the frequency axis on the EPSI image.
+        for x_loc, y_loc in zip(x, y):
+            img[int(x_loc), y_loc] = np.max(img)
+        self.plot(img)
+        return img
 
     @staticmethod
     def zero_pad(kspace: np.ndarray) -> np.ndarray:
@@ -143,98 +250,23 @@ class VirtualBiopsy:
         else:
             return np.copy(self.cimg)[rmin:rmax, cmin:cmax]
 
-    def phase_correction(
+    def plot(
         self,
-        method: str = "Ahn and Cho",
-        num_bins: int = 100,
-        inplace: bool = False
-    ) -> np.ndarray:
+        img: np.ndarray = None,
+        savepath: Optional[Union[Path, str]] = None
+    ) -> None:
         """
-        Corrects even/odd phase discrepancy in biopsy image using a specified
-        algorithm.
+        Plots an image.
         Input:
-            method: phase correction algorithm.
-            num_bins: number of bins to use in histogram for determination of
-                zero-order phase correction term in Ahn and Cho (1987)
-                algorithm.
-            inplace: whether to directly modify self.cimg.
-        Returns:
-            Copy of self.cimg with even/odd phase discrepancy corrected if not
-            inplace. Otherwise, return None.
-        """
-        def _ahn_and_cho(cimg: np.ndarray) -> np.ndarray:
-            H, W = cimg.shape
-            opt1 = True
-            if opt1:
-                rho_x = np.zeros(H, dtype=cimg.dtype)
-                for r in range(H - 1):
-                    rho_x[r] = np.divide(
-                        np.mean(cimg[r, :] * np.conj(cimg[r + 1, :])), H - 1
-                    )
-            else:
-                rho_x = np.zeros(W, dtype=cimg.dtype)
-                for c in range(W - 1):
-                    rho_x[c] = np.divide(
-                        np.mean(cimg[:, c] * np.conj(cimg[:, c + 1])), W - 1
-                    )
-            eps_1 = -np.angle(rho_x)
-            eps_1 = np.mean(eps_1)
-            if opt1:
-                cimg_1 = cimg * np.exp(-1j * eps_1 * np.arange(0, H))
-            else:
-                cimg_1 = cimg * np.exp(-1j * eps_1 * np.arange(0, W))
-            hist, bin_edges = np.histogram(np.angle(cimg_1), bins=num_bins)
-            eps_0 = bin_edges[np.argmax(hist)]
-            return cimg_1 * np.exp(-1j * eps_0)
-
-        def _tisdall(cimg: np.ndarray) -> np.ndarray:
-            R = np.copy(cimg)
-            # Rpos and Rneg are neighbors along the ky direction.
-            Rneg = np.copy(R)[::2, :]
-            Rpos = np.copy(R)[1::2, :]
-            P = np.zeros_like(Rpos)
-            for i in range(P.shape[0]):
-                P[i, :] = np.divide(
-                    np.conj(Rneg[i, :]) * Rpos[i, :],
-                    np.abs(Rneg[i, :] * Rpos[i, :])
-                )
-            # Use the phase correction term to correct each line.
-            for i in range(R.shape[0]):
-                if i % 2:
-                    phase_corr = np.sqrt(P[(i - 1) // 2, :])
-                else:
-                    phase_corr = np.conj(np.sqrt(P[i // 2, :]))
-                R[i, :] = R[i, :] * np.exp(1j * phase_corr)
-            return R
-
-        def _none(cimg: np.ndarray) -> np.ndarray:
-            return cimg
-
-        method_map = {
-            "ahn and cho": _ahn_and_cho,
-            "tisdall": _tisdall,
-            "none": _none,
-        }
-        if inplace:
-            self.cimg = method_map[method.lower()](self.cimg)
-            return None
-        else:
-            return method_map[method.lower()](self.cimg)
-
-    def plot(self, savepath: Optional[Union[Path, str]] = None) -> None:
-        """
-        Plots the magnitude of the virtual biopsy.
-        Input:
+            img: 2D image to plot. Default self.cimg.
             savepath: optional filepath to save the virtual biopsy image to.
         Returns:
             None.
         """
-        kspace = False
         plt.figure(figsize=(10, 10))
-        if kspace:
-            plt.imshow(np.abs(np.fft.fftshift(np.fft.fft2(self.cimg))[:, 128:384]), cmap="gray")
-        else:
-            plt.imshow(np.abs(self.cimg), cmap="gray")
+        if img is None:
+            img = self.cimg
+        plt.imshow(np.abs(img), cmap="gray")
         plt.axis("off")
         if savepath is None:
             plt.show()
@@ -242,22 +274,3 @@ class VirtualBiopsy:
             plt.savefig(
                 savepath, dpi=600, bbox_inches="tight", transparent=True
             )
-
-
-def debug(img: np.ndarray, stop: bool = True) -> None:
-    """
-    Utility function that plots a given 2D matrix.
-    Input:
-        img: 2D image to plot.
-        stop: whether to stop execution at the end of the function.
-    Returns:
-        None.
-    """
-    plt.plot()
-    plt.imshow(img, cmap="gray")
-    plt.axis("off")
-    plt.show()
-    plt.close()
-    if stop:
-        sys.exit(0)
-    return None
