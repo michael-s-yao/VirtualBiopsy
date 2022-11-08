@@ -20,17 +20,19 @@ class VirtualBiopsy:
     def __init__(
         self,
         dat_fn: Union[Path, str],
-        seed: int = 42
+        seed: int = 42,
+        M: int = 20
     ):
         """
         Args:
             dat_fn: path to .dat file of raw Siemens virtual biopsy data.
             seed: optional random seed.
+            M: Hann window size. Default 20.
         """
         self.dat_fn = dat_fn
         self.seed = seed
         self.rng = np.random.RandomState(self.seed)
-        self.cimg = self.reconstruct(M=20)
+        self.cimg = self.reconstruct(M=M)
 
     def ifftnd(
         self, kspace: np.ndarray, axes: Sequence[int] = [-1]
@@ -91,7 +93,12 @@ class VirtualBiopsy:
         This function implementation was adapted from https://github.com/
         pehses/twixtools/blob/master/demo/recon_example.ipynb
         """
-        phase_corr = epsi_map[-1]["phasecorr"]
+        if "phasecorr" in epsi_map[-1]:
+            phase_corr = epsi_map[-1]["phasecorr"]
+        else:
+            # If a separate phase correction scan is not avaialble, then just
+            # use the actual scan itself for phase correction.
+            phase_corr = epsi_map[-1]["image"]
         phase_corr.flags["remove_os"] = True
         phase_corr.flags["skip_empty_lead"] = True
         phase_corr.flags["average"]["Seg"] = False
@@ -119,23 +126,32 @@ class VirtualBiopsy:
         # Remove segment dimension.
         img = np.squeeze(np.sum(img, axis=5))
         img = self.ifftnd(img, axes=[0])
+        print(img.shape)
         return img
 
-    def coil_combine(self, img: np.ndarray, axis: int = 1) -> np.ndarray:
+    def coil_combine(
+        self, img: np.ndarray, axis: int = 1, use_svd: bool = True
+    ) -> np.ndarray:
         """
         Simple RSS coil combination implementation.
         Input:
             img: EPSI virtual biopsy image data.
             axis: axis to apply coil combination to.
+            use_svd: whether to use SVD method for coil combination. If False,
+                RSS is used instead.
         Returns:
             Coil combined image.
         """
-        return np.sqrt(np.sum(np.conj(img) * img, axis=axis))
+        if not use_svd:
+            return np.sqrt(np.sum(np.conj(img) * img, axis=axis))
+        print(img.shape)
+        import sys
+        sys.exit(0)
 
     def freq_axis(
         self,
         img: np.ndarray,
-        signal_thresh: float = 0.001,
+        signal_thresh: float = 0.2,
         num_sample: int = 1000
     ) -> Tuple[np.ndarray]:
         """
@@ -156,6 +172,7 @@ class VirtualBiopsy:
         """
         # Threshold the signal in image space (empirically determined).
         w_locs, h_locs = np.where(img > signal_thresh)
+        self.biopsy_lims = np.min(w_locs), np.max(w_locs)
         # Randomly sample a subset of the signal points in image space.
         if num_sample < 0:
             num_sample = h_locs.shape[0]
@@ -192,6 +209,7 @@ class VirtualBiopsy:
         img = self.phase_corr(epsi_map, kspace)
         # Coil combination.
         img = self.coil_combine(img, axis=1)
+        self.num_echo_spacing = img.shape[0]
 
         # Zero-pad the Fourier data.
         kspace = np.squeeze(VirtualBiopsy.zero_pad(
@@ -199,16 +217,17 @@ class VirtualBiopsy:
         ))
 
         # Apply apodization filter.
-        if M > 0:
+        if M > 0 and False:
             apo_window = hann(M=M)[..., np.newaxis]
             kspace = convolve2d(kspace, apo_window, mode="same")
 
         img = np.flip(self.ifftnd(kspace, axes=[-2, -1]))
 
-        x, y = self.freq_axis(np.abs(img))
+        self.res_axis = self.freq_axis(np.abs(img) / np.max(np.abs(img)))
+        # x, y = self.res_axis  # TODO: Remove
         # Plot the frequency axis on the EPSI image.
-        for x_loc, y_loc in zip(x, y):
-            img[int(x_loc), y_loc] = np.max(img)
+        # for x_loc, y_loc in zip(x, y):
+        #     img[int(x_loc), y_loc] = np.max(img)
         self.plot(img)
         return img
 
