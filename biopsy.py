@@ -1,19 +1,16 @@
 """
-Defines the virtual biopsy data explorer class.
+Defines the virtual biopsy EPSI data class.
 
 Author(s):
-    Michael Yao
+    Michael S Yao
+    M Dylan Tisdall
 
-Licensed under the MIT License.
+Licensed under the MIT License. Copyright 2022 University of Pennsylvania.
 """
-import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
-from scipy.signal import convolve2d
-from scipy.signal.windows import hann
-from typing import Optional, List, Sequence, Tuple, Union
+from typing import Optional, Sequence, Tuple, Union
 from twixtools import map_twix
-from twixtools import twix_array
 
 
 class VirtualBiopsy:
@@ -21,18 +18,74 @@ class VirtualBiopsy:
         self,
         dat_fn: Union[Path, str],
         seed: int = 42,
-        M: int = 20
+        do_zero_pad: bool = True
     ):
         """
         Args:
             dat_fn: path to .dat file of raw Siemens virtual biopsy data.
-            seed: optional random seed.
-            M: Hann window size. Default 20.
+            seed: optional random seed. Default 42.
+            do_zero_pad: whether or not to zero-pad the kspace data to
+                square dimensions. Default True.
         """
         self.dat_fn = dat_fn
         self.seed = seed
+        if not self.dat_fn.endswith(".dat"):
+            raise ValueError(
+                f"Expecting .dat raw data file, but got {self.dat_fn} instead."
+            )
+        self.do_zero_pad = do_zero_pad
         self.rng = np.random.RandomState(self.seed)
-        self.cimg = self.reconstruct(M=M)
+
+        # Extract Siemens raw data.
+        epsi_map = map_twix(self.dat_fn)
+        kspace = epsi_map[-1]["image"]
+        kspace.flags["remove_os"] = True
+        kspace.flags["average"]["Seg"] = True
+        kspace.flags["average"]["Ave"] = False
+        kspace = np.squeeze(kspace[:])
+
+        # Extract relevant metadata.
+        metadata = epsi_map[-1]["hdr"]
+        # Echo spacing has units of seconds.
+        self.echo_spacing = metadata["Config"]["EchoSpacing_us"] / 1e6
+        self.len_echo_train = int(metadata["Dicom"]["EchoTrainLength"])
+        self.spectral_unit = 1 / (self.len_echo_train * self.echo_spacing)
+        # B field strength has units of Teslas. Rounding to the nearest
+        # integer field strength.
+        self.B_mag = float(int(metadata["Dicom"]["flMagneticFieldStrength"]))
+        self.gamma = 42.58 * 1e6  # In units of Hz / T. Assuming 1H imaging.
+        self.larmor_frequency = self.gamma * self.B_mag
+        # MR Imaging parameters. TE, TR, and total scan time are in units of
+        # seconds. FOV and voxel size is in units of mm.
+        self.TR = metadata["Config"]["TR"] / 1e6
+        self.TE = metadata["Meas"]["alTE"][0] / 1e6
+        self.scan_time = metadata["Config"]["TotalScanTimeFromUIinms"] / 1e3
+        self.RO_FOV = metadata["Config"]["RoFOV"]
+        self.RO_voxel_size = self.RO_FOV / kspace.shape[-1]
+
+        # Phase correction.
+        kspace = self.phase_correct(kspace)
+
+        # Spectrum is the inverse Fourier transform of the kspace data.
+        # Note that the kspace data is technically k-t data for EPSI.
+        # Therefore, the spectrum data is in x-f space.
+        spectrum = self.ifftnd(kspace, axes=[1, -1])
+        # Complex average over the repetitions.
+        spectrum = np.mean(spectrum, axis=0)
+        # Coil combination using SVD to maximize the SNR in the final output.
+        u, s, _ = np.linalg.svd(
+            np.transpose(spectrum, axes=(2, 0, 1)), full_matrices=False
+        )
+        self.spectrum = np.flip(s[:, 0] * u[:, :, 0].T)
+        self.kspace = self.fftnd(self.spectrum, axes=[0, -1])
+
+        if self.do_zero_pad:
+            self.kspace = self.zero_pad(self.kspace)
+            self.spectrum = self.ifftnd(self.kspace, axes=[0, -1])
+
+        self.res_axis = self.freq_axis(
+            np.abs(self.spectrum) / np.max(np.abs(self.spectrum))
+        )
 
     def ifftnd(
         self, kspace: np.ndarray, axes: Sequence[int] = [-1]
@@ -78,75 +131,36 @@ class VirtualBiopsy:
             kspace, np.sqrt(np.prod(np.take(kspace.shape, axes)))
         )
 
-    def phase_corr(
-        self, epsi_map: List[dict], kspace: twix_array
-    ) -> np.ndarray:
+    def phase_correct(self, kspace: np.ndarray) -> np.ndarray:
         """
-        Calculate and apply EPI phase correction using a simple
-        autocorrelation-based approach.
+        Calculate and apply EPI phase correction using the approach proposed
+        by Tisdall MD. (2020). Scrambled readout polarities in 3D-encoded EPI
+        markedly reduce the coherence of N/2 ghosts. Proc ISMRM.
         Input:
-            epsi_map: an object returned from calling `twixtools.map_twix`
-                that represents the EPSI virtual biopsy dataset.
-            kspace: the extracted image kspace dataset.
+            kspace: the extracted EPSI kspace dataset with shape .
         Returns:
-            The phase constructed and iFFT'ed kspace data.
-        This function implementation was adapted from https://github.com/
-        pehses/twixtools/blob/master/demo/recon_example.ipynb
+            The phase corrected kspace data.
         """
-        if "phasecorr" in epsi_map[-1]:
-            phase_corr = epsi_map[-1]["phasecorr"]
-        else:
-            # If a separate phase correction scan is not avaialble, then just
-            # use the actual scan itself for phase correction.
-            phase_corr = epsi_map[-1]["image"]
-        phase_corr.flags["remove_os"] = True
-        phase_corr.flags["skip_empty_lead"] = True
-        phase_corr.flags["average"]["Seg"] = False
-        phase_corr.flags["regrid"] = True
+        relaxation = self.ifftnd(kspace, axes=[-1])
+        mean_relaxation = np.mean(relaxation, axis=0)
 
-        # Calculate phase correction using a simple autocorrelation-based
-        # approach.
-        ncol = phase_corr.shape[-1]
-        pc = self.ifftnd(phase_corr[:], axes=[-1])
-        slope = np.angle(
-            np.sum(
-                np.sum(
-                    np.conj(pc[..., 1:]) * pc[..., :-1],
-                    axis=-1,
-                    keepdims=True
-                ),
-                axis=-2,
-                keepdims=True
-            )
+        target = np.pad(
+            mean_relaxation[1:],
+            ((0, 1), (0, 0), (0, 0)),
+            "constant",
+            constant_values=0.0
         )
-        pc_corr = np.exp(1j * slope * (np.arange(ncol) - (ncol // 2)))
-        # Apply phase correction.
-        img = self.ifftnd(kspace[:], axes=[-1])
-        img = img * pc_corr
-        # Remove segment dimension.
-        img = np.squeeze(np.sum(img, axis=5))
-        img = self.ifftnd(img, axes=[0])
-        print(img.shape)
-        return img
+        target[1:] += mean_relaxation[:-1]
+        target[1:-1] /= 2.0
 
-    def coil_combine(
-        self, img: np.ndarray, axis: int = 1, use_svd: bool = True
-    ) -> np.ndarray:
-        """
-        Simple RSS coil combination implementation.
-        Input:
-            img: EPSI virtual biopsy image data.
-            axis: axis to apply coil combination to.
-            use_svd: whether to use SVD method for coil combination. If False,
-                RSS is used instead.
-        Returns:
-            Coil combined image.
-        """
-        if not use_svd:
-            return np.sqrt(np.sum(np.conj(img) * img, axis=axis))
-        print(img.shape)
-        import sys
-        sys.exit(0)
+        delay_filter = (target * np.conj(mean_relaxation)) / np.abs(
+            target * mean_relaxation
+        )
+        delay_filter[0::2] = 1.0
+
+        corrected_relaxation = relaxation * delay_filter
+        kspace = self.fftnd(corrected_relaxation, axes=[-1])
+        return kspace
 
     def freq_axis(
         self,
@@ -188,62 +202,18 @@ class VirtualBiopsy:
         pe_locs = q_model(ro_locs)
         return pe_locs, ro_locs
 
-    def reconstruct(self, M: int = 20) -> np.ndarray:
-        """
-        Reads and reconstructs raw scanner data from specified .dat file.
-        Input:
-            M: Hann window size. Default 20.
-            None.
-        Returns:
-            Raw scanner data from self.dat_fn as a 3D array with dimensions
-            [acquisition_counter, num_channels, num_columns].
-        """
-        epsi_map = map_twix(self.dat_fn)
-        kspace = epsi_map[-1]["image"]
-        kspace.flags["remove_os"] = True
-        # For phase-correction, we need to keep the individual segments, which
-        # indicate the readout's polarity.
-        kspace.flags["average"]["Seg"] = False
-        kspace.flags["regrid"] = True
-
-        img = self.phase_corr(epsi_map, kspace)
-        # Coil combination.
-        img = self.coil_combine(img, axis=1)
-        self.num_echo_spacing = img.shape[0]
-
-        # Zero-pad the Fourier data.
-        kspace = np.squeeze(VirtualBiopsy.zero_pad(
-            self.fftnd(img, axes=[0, -1])[np.newaxis, ...]
-        ))
-
-        # Apply apodization filter.
-        if M > 0 and False:
-            apo_window = hann(M=M)[..., np.newaxis]
-            kspace = convolve2d(kspace, apo_window, mode="same")
-
-        img = np.flip(self.ifftnd(kspace, axes=[-2, -1]))
-
-        self.res_axis = self.freq_axis(np.abs(img) / np.max(np.abs(img)))
-        # x, y = self.res_axis  # TODO: Remove
-        # Plot the frequency axis on the EPSI image.
-        # for x_loc, y_loc in zip(x, y):
-        #     img[int(x_loc), y_loc] = np.max(img)
-        self.plot(img)
-        return img
-
-    @staticmethod
-    def zero_pad(kspace: np.ndarray) -> np.ndarray:
+    def zero_pad(self, kspace: np.ndarray) -> np.ndarray:
         """
         Zero-pads an input kspace data to make the dataset square.
         Input:
-            kspace: kspace dataset with dimensions CHW. Padding is applied
+            kspace: kspace dataset with dimensions HW. Padding is applied
                 along the H dimension.
         Returns:
             Zero-padded kspace.
         """
-        c, h, w = kspace.shape
-        padding = np.zeros((c, (w - h) // 2, w), dtype=kspace.dtype)
-        return np.concatenate((padding, kspace, padding,), axis=1)
+        h, w = kspace.shape
+        padding = np.zeros(((w - h) // 2, w), dtype=kspace.dtype)
+        return np.concatenate((padding, kspace, padding,), axis=0)
 
     def center_crop(
         self, crop_size: Optional[Tuple[int]] = None, inplace: bool = False
@@ -268,28 +238,3 @@ class VirtualBiopsy:
             return None
         else:
             return np.copy(self.cimg)[rmin:rmax, cmin:cmax]
-
-    def plot(
-        self,
-        img: np.ndarray = None,
-        savepath: Optional[Union[Path, str]] = None
-    ) -> None:
-        """
-        Plots an image.
-        Input:
-            img: 2D image to plot. Default self.cimg.
-            savepath: optional filepath to save the virtual biopsy image to.
-        Returns:
-            None.
-        """
-        plt.figure(figsize=(10, 10))
-        if img is None:
-            img = self.cimg
-        plt.imshow(np.abs(img), cmap="gray")
-        plt.axis("off")
-        if savepath is None:
-            plt.show()
-        else:
-            plt.savefig(
-                savepath, dpi=600, bbox_inches="tight", transparent=True
-            )
