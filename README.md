@@ -28,8 +28,8 @@ pip install -r requirements.txt
 To ensure reproducibility, we provide our raw MR signal datasets used to generate our reported results [here](https://upenn.box.com/s/dt5ma6t3yrwldmoflc1wos8sdk8s22nx). Image reconstruction and analysis scripts are offered in `biopsy.py`. To replicate the results presented in our 2023 ISMRM Abstract submission, you can run 
 
 ```
-python main.py --reproduce_phantom --datapath ./path/to/phantom/data.dat
-python main.py --reproduce_exvivo --datapath ./path/to/exvivo/data.dat
+python main.py --reproduce_phantom --datapath ./path/to/phantom/data/raw.dat
+python main.py --reproduce_exvivo --datapath ./path/to/exvivo/data/raw_TE15ms.dat ./path/to/exvivo/data/raw_TE30ms.dat ./path/to/exvivo/data/raw_TE45ms.dat
 ```
 
 For more options and additional details on how to use our code for further studies using your own EPSI data, you can run the command `python main.py --help`.
