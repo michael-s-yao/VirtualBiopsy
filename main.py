@@ -150,7 +150,7 @@ if __name__ == "__main__":
 
     if args.reproduce_phantom:
         print("Running Phantom Data Replication Experiment...")
-        reproduce_phantom(args.datapath)
+        reproduce_phantom(args.datapath[0])
         print("Done!")
     if args.reproduce_exvivo:
         print("Running Ex-vivo Data Replication Experiment...")

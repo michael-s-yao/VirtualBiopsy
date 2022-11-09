@@ -1,5 +1,5 @@
 """
-Defines the virtual biopsy EPSI data explorer class.
+Defines the virtual biopsy EPSI data explorer and visualizer class.
 
 Author(s):
     Michael S Yao
@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 from pathlib import Path
-from typing import Sequence, Union
+from typing import Optional, Sequence, Union
 
 from biopsy import VirtualBiopsy
 
@@ -26,16 +26,31 @@ class EPSIExplorer:
         self.plot_config()
         self.biopsy = biopsy
 
-    def T2_spectra(self, savepath: Union[Path, str] = None) -> np.ndarray:
+    def T2_spectra(
+        self,
+        savepath: Union[Path, str] = None,
+        locs: Optional[Sequence[int]] = None,
+        colors: Optional[Sequence[str]] = None,
+    ) -> np.ndarray:
         """
         Plots the x-f T2-weighted EPSI spectrum.
         Input:
             savepath: optional path to save the plot. Default not saved.
+            locs: optional location(s) (in pixel coordinates) at which to
+                highlight with vertical lines in the spectrum.
+            colors: optional colors to plot the highlighting vertical lines
+                in the spectrum. If not provided, all of the spectra are
+                plotted in black.
         Returns:
             None.
         """
         plt.figure(figsize=(10, 10))
-        plt.imshow(np.abs(self.biopsy.spectrum), cmap="gray")
+        plt.imshow(np.abs(self.biopsy.spectrum), cmap="gray", aspect="auto")
+        if locs is not None:
+            if colors is None:
+                colors = ["black"] * len(locs)
+            for loc, co in zip(locs, colors):
+                plt.axvline(x=loc, linestyle="-", color=co, linewidth=4)
 
         wticks = np.linspace(0, self.biopsy.spectrum.shape[-1], 5)
         wticklabels = [
@@ -50,7 +65,7 @@ class EPSIExplorer:
             1e6 * f * self.biopsy.spectral_unit / self.biopsy.larmor_frequency
             for f in hticks - self.biopsy.spectrum.shape[0] // 2
         ]
-        hticklabels = [str(int(x)) for x in hticklabels]
+        hticklabels = [f"{x:.2f}" for x in hticklabels]
         plt.gca().set_yticks(hticks)
         plt.gca().set_yticklabels(hticklabels[::-1])
         plt.ylabel("Frequency Shift [ppm]")
@@ -61,7 +76,8 @@ class EPSIExplorer:
                 savepath,
                 dpi=600,
                 transparent=True,
-                bbox_inches="tight"
+                bbox_inches="tight",
+                pad_inches=0.0
             )
         plt.close()
         return
@@ -113,10 +129,18 @@ class EPSIExplorer:
         signal_idxs = np.where(off_reson_map != 0)[0]
         x, off_reson_map = x[signal_idxs], off_reson_map[signal_idxs]
 
-        plt.figure(figsize=(10, 6))
-        plt.plot(x, off_reson_map, color="black")
-        plt.xlabel("Spatial Position Along Biopsy [mm]")
-        plt.ylabel("Peak Off-Resonance Frequency [ppm]")
+        _, left_ax = plt.subplots(figsize=(10, 8))
+        left_ax.plot(x, off_reson_map, color="black")
+        left_ax.set_xlabel("Spatial Position Along Biopsy [mm]")
+        left_ax.set_ylabel("Peak Off-Resonance Frequency [ppm]")
+
+        right_ax = left_ax.twinx()
+        mn, mx = left_ax.get_ylim()
+        right_ax.set_ylim(
+            mn * self.biopsy.larmor_frequency / 1e6,
+            mx * self.biopsy.larmor_frequency / 1e6
+        )
+        right_ax.set_ylabel("Peak Off-Resonance Frequency [Hz]")
 
         if savepath is None or len(savepath) == 0:
             plt.show()
@@ -294,31 +318,21 @@ class EPSIExplorer:
             plt.cla()
         plt.close()
 
-        plt.figure(figsize=(10, 10))
-        plt.imshow(np.abs(self.biopsy.spectrum), cmap="gray")
-        for loc, co in zip(locs, colors):
-            plt.axvline(x=loc, linestyle="-", color=co, linewidth=4)
-        plt.axis("off")
-        if savepath is not None:
-            plt.savefig(
-                savepath,
-                dpi=600,
-                transparent=True,
-                bbox_inches="tight"
-            )
-        else:
-            plt.show()
-        plt.close()
+        self.T2_spectra(savepath, locs=locs, colors=colors)
         return
 
-    def plot_config(self, font_size: int = 18):
+    def plot_config(self, font_size: int = 18, use_sans_serif: bool = True):
         """
         Plot configuration variables.
         Input:
             font_size: default font size. Default 18.
+            use_sans_serif: whether to use Sans Serif font style.
         Returns:
             None.
         """
         matplotlib.rcParams["mathtext.fontset"] = "stix"
-        matplotlib.rcParams["font.family"] = "STIXGeneral"
+        if use_sans_serif:
+            matplotlib.rcParams['font.family'] = "Arial"
+        else:
+            matplotlib.rcParams["font.family"] = "STIXGeneral"
         matplotlib.rcParams.update({"font.size": font_size})

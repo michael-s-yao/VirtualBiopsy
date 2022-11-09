@@ -52,7 +52,7 @@ class VirtualBiopsy:
         self.spectral_unit = 1 / (self.len_echo_train * self.echo_spacing)
         # B field strength has units of Teslas. Rounding to the nearest
         # integer field strength.
-        self.B_mag = float(int(metadata["Dicom"]["flMagneticFieldStrength"]))
+        self.B_mag = float(round(metadata["Dicom"]["flMagneticFieldStrength"]))
         self.gamma = 42.58 * 1e6  # In units of Hz / T. Assuming 1H imaging.
         self.larmor_frequency = self.gamma * self.B_mag
         # MR Imaging parameters. TE, TR, and total scan time are in units of
