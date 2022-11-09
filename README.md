@@ -6,7 +6,7 @@
 
 Recent work has demonstrated the use of columnar excitations and high-resolution 1D readouts to encode cortical laminar features. In particular, columnar diffusion-weighted imaging (DWI) has demonstrated strong sensitivity to the laminar features of the cortical myleoarchitecture. However, neurodegenerative diseases, in particular Alzheimer's Disease (AD), Amyotrophic lateral sclerosis (ALS), and frontotemporal lobar degeneration (FTLD) also produce notable iron deposition within the cortical laminae. The layer-specific resonance frequency shift that results from the cortical distribution of laminar iron has previously been imaged using 2D T2*-weighted and 2D phase-contrast methods. Combing these concepts, we explored the use of columnar excitations and high-resolution 1D echo planar spectroscopic imaging (EPSI) readouts to produce a "virtual biopsy" with depth-resolved quantification of the water signal's off-resonance shift, towards the goal of resolving the pathologic iron distributions associated with different neurodegenerative diseases that can be difficult to distinguish *in vivo*.
 
-![EPSI Pulse Sequence](docs/figs-0.png)
+![EPSI Pulse Sequence](docs/overview/overview.png)
 
 ## Installation
 
@@ -25,14 +25,14 @@ source env/bin/activate
 pip install -r requirements.txt
 ```
 
-To ensure reproducibility, we provide our raw MR signal datasets used to generate our reported results [here](https://upenn.box.com/s/dt5ma6t3yrwldmoflc1wos8sdk8s22nx). Image reconstruction and analysis scripts are offered in `biopsy.py`. To replicate the results associated with our 2023 ISMRM Abstract submission, you can run 
+To ensure reproducibility, we provide our raw MR signal datasets used to generate our reported results [here](https://upenn.box.com/s/dt5ma6t3yrwldmoflc1wos8sdk8s22nx). Image reconstruction and analysis scripts are offered in `biopsy.py`. To replicate the results presented in our 2023 ISMRM Abstract submission, you can run 
 
 ```
-python main.py
+python main.py --reproduce_phantom --datapath ./path/to/phantom/data.dat
+python main.py --reproduce_exvivo --datapath ./path/to/exvivo/data.dat
 ```
 
-For more options, you can run the command `python main.py --help`.
-
+For more options and additional details on how to use our code for further studies using your own EPSI data, you can run the command `python main.py --help`.
 
 ## Contact
 
@@ -48,10 +48,10 @@ This repository is MIT licensed (see [LICENSE](LICENSE)).
 
 If you use any of the code in this repository or find it useful, please consider citing our work:
 
-    @InProceedings{virtualbiopsy2023,
+    @misc{virtualbiopsy2023,
       author={Yao, MS and Tisdall, MD},
       title={Evaluating Echo Planar Spectroscopic Imaging with a Columnar Excitation for \enquote{Virtual Biopsies}},
-      booktitle={Proc Intl Soc Mag Reson Med},
       year={2023},
-      pages={TODO},
     } 
+
+This citation will be updated with additional information after our work is further evaluated through peer review.

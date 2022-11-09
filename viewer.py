@@ -22,7 +22,7 @@ def load_nifti(fn: Union[str, Path]) -> np.ndarray:
 def build_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="NIfTI File Explorer")
     parser.add_argument(
-        "--data_path",
+        "--datapath",
         type=str,
         required=True,
         help="Path to NIfTI data file. Should have .nii.gz file extension."
@@ -43,7 +43,7 @@ def build_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = build_args()
-    img = load_nifti(args.data_path)
+    img = load_nifti(args.datapath)
     h, w = img.shape
     plt.figure()
     if args.kspace:
@@ -52,7 +52,7 @@ if __name__ == "__main__":
             cmap="gray"
         )
     else:
-        plt.imshow(img[h-w:h, :], cmap="gray")
+        plt.imshow(img, cmap="gray")
     plt.axis("off")
     if args.savepath is None or len(args.savepath) == 0:
         plt.show()
