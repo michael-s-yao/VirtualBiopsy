@@ -25,7 +25,7 @@ source env/bin/activate
 pip install -r requirements.txt
 ```
 
-To ensure reproducibility, we provide our raw MR signal datasets used to generate our reported results [here](https://upenn.box.com/s/dt5ma6t3yrwldmoflc1wos8sdk8s22nx). Image reconstruction and analysis scripts are offered in `biopsy.py`. To replicate the results presented in our 2023 ISMRM Abstract submission, you can run 
+To ensure reproducibility, we provide our raw MR signal datasets used to generate our reported results [here](https://drive.google.com/drive/folders/1-bWsOTvEZ6b3FyUmO_Gz23A0c9KoJ7cw?usp=sharing). Image reconstruction and analysis scripts are offered in `biopsy.py`. To replicate the results presented in our 2023 ISMRM Abstract submission, you can run
 
 ```
 python main.py --reproduce_phantom --datapath ./path/to/phantom/data/raw.dat
@@ -52,6 +52,6 @@ If you use any of the code in this repository or find it useful, please consider
       author={Yao, MS and Tisdall, MD},
       title={Evaluating Echo Planar Spectroscopic Imaging with a Columnar Excitation for \enquote{Virtual Biopsies}},
       year={2023},
-    } 
+    }
 
 This citation will be updated with additional information after our work is further evaluated through peer review.
